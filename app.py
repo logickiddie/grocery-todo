@@ -9,8 +9,19 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS groceries
             (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-             item TEXT NOT NULL)
+             item TEXT NOT NULL,
+             category TEXT DEFAULT 'General',
+             done BOOLEAN DEFAULT 0)
         """)
+        # Migrate existing data if needed (add category and done if not present)
+        try:
+            conn.execute("ALTER TABLE groceries ADD COLUMN category TEXT DEFAULT 'General'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE groceries ADD COLUMN done BOOLEAN DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
 # Voice recognition function
@@ -28,12 +39,12 @@ def voice_to_text():
         return None
 
 # Database operations
-def add_items(items_list):
+def add_items(items_list, category):
     with sqlite3.connect("grocery_list.db") as conn:
         cursor = conn.cursor()
         for item in items_list:
             if item.strip():  # Only add non-empty items
-                cursor.execute("INSERT INTO groceries (item) VALUES (?)", (item.strip(),))
+                cursor.execute("INSERT INTO groceries (item, category, done) VALUES (?, ?, 0)", (item.strip(), category))
         conn.commit()
 
 def delete_item(item_id):
@@ -41,10 +52,24 @@ def delete_item(item_id):
         conn.execute("DELETE FROM groceries WHERE id = ?", (item_id,))
         conn.commit()
 
-def get_items():
+def toggle_done(item_id):
     with sqlite3.connect("grocery_list.db") as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, item FROM groceries ORDER BY id DESC")
+        cursor.execute("SELECT done FROM groceries WHERE id = ?", (item_id,))
+        current = cursor.fetchone()[0]
+        conn.execute("UPDATE groceries SET done = ? WHERE id = ?", (not current, item_id))
+        conn.commit()
+
+def clear_done():
+    with sqlite3.connect("grocery_list.db") as conn:
+        conn.execute("DELETE FROM groceries WHERE done = 1")
+        conn.commit()
+
+def get_items(search=""):
+    with sqlite3.connect("grocery_list.db") as conn:
+        cursor = conn.cursor()
+        query = "SELECT id, item, category, done FROM groceries WHERE item LIKE ? ORDER BY done ASC, id DESC"
+        cursor.execute(query, (f"%{search}%",))
         return cursor.fetchall()
 
 # Initialize database
@@ -79,7 +104,7 @@ def handle_voice_input():
     return False
 
 # Input form
-col1, col2 = st.columns([4, 1])
+col1, col2, col3 = st.columns([3, 2, 1])
 
 with col1:
     text_input = st.text_input(
@@ -90,6 +115,9 @@ with col1:
     )
 
 with col2:
+    category_input = st.text_input("Category", value="General", placeholder="e.g., Fruits")
+
+with col3:
     if st.button("🎤", help="Voice Input"):
         if handle_voice_input():
             st.rerun()
@@ -102,21 +130,29 @@ if st.button("Add To List", type="primary"):
     if text_input.strip():
         items = [item.strip() for item in text_input.split() if item.strip()]
         if items:
-            add_items(items)
+            add_items(items, category_input.strip() or "General")
             st.success(f"Added {len(items)} item(s) to the list!")
             st.session_state.input_text = ""
             st.rerun()
 
+# Search and clear
+search_query = st.text_input("Search items", placeholder="Type to filter...")
+if st.button("Clear Purchased"):
+    clear_done()
+    st.rerun()
+
 # Display items
-items = get_items()
+items = get_items(search_query)
 
 if items:
     st.divider()
-    for item_id, item_text in items:
-        col1, col2 = st.columns([5, 1])
+    for item_id, item_text, category, done in items:
+        col1, col2, col3 = st.columns([4, 2, 1])
         with col1:
-            st.write(f"• {item_text}")
+            st.checkbox(f"• {item_text} ({category})", value=done, key=f"chk_{item_id}", on_change=toggle_done, args=(item_id,))
         with col2:
+            st.write("✅ Done" if done else "")
+        with col3:
             if st.button("🗑️", key=f"del_{item_id}"):
                 delete_item(item_id)
                 st.rerun()
